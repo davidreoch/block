@@ -68,6 +68,8 @@
   .note{grid-column:1/-1;border:1px solid var(--line);border-radius:8px;height:40px;
     padding:0 10px;outline:0;font-size:15px}
   .hint{grid-column:1/-1;font-size:13px;color:var(--mute);margin-top:2px}
+  .prev{font-size:13px;color:var(--mute);border-left:3px solid var(--line);
+    padding:2px 0 2px 8px;margin:0 0 10px}
   .hint.warn{color:var(--amber)}
 
   .panel{background:#fff;border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
@@ -157,19 +159,19 @@ const LIFTNAME={squat:"Squat",bench:"Paused bench",dead:"Deadlift"};
 const RPE_OPTS=["",5,5.5,6,6.5,7,7.5,8,8.5,9,9.5,10];
 
 // ---------- state ----------
-let S = { tm:{squat:135,bench:110,dead:165}, week:1, day:"Mon", log:{}, showMax:false };
+let S = { tm:{squat:135,bench:110,dead:165}, week:1, day:"Mon", log:{}, archive:[], block:1, showMax:false, showHist:false };
 const KEY="block_tracker_v1";
 let saveTimer=null;
 
 function load(){
-  try{ const r=localStorage.getItem(KEY); if(r){ const v=JSON.parse(r); S={...S,...v,showMax:false}; } }
+  try{ const r=localStorage.getItem(KEY); if(r){ const v=JSON.parse(r); S={...S,...v,showMax:false,showHist:false}; if(!Array.isArray(S.archive)) S.archive=[]; if(!S.block) S.block=1; } }
   catch(e){ /* first run or storage unavailable */ }
   render();
 }
 function save(){
   clearTimeout(saveTimer);
   saveTimer=setTimeout(()=>{
-    try{ localStorage.setItem(KEY, JSON.stringify({tm:S.tm,week:S.week,day:S.day,log:S.log})); flash("Saved"); }
+    try{ localStorage.setItem(KEY, JSON.stringify({tm:S.tm,week:S.week,day:S.day,log:S.log,archive:S.archive,block:S.block})); flash("Saved"); }
     catch(e){ flash("Not saved – open this page in Safari or Chrome"); }
   },400);
 }
@@ -185,6 +187,14 @@ function target(ex,w){
 }
 function logKey(ex,w){ return `w${w}_${ex.id}`; }
 function getLog(ex,w){ return S.log[logKey(ex,w)] || (S.log[logKey(ex,w)]={kg:"",sets:[],rpe:"",note:""}); }
+function prevLog(ex,w){
+  if(!S.archive || !S.archive.length) return null;
+  const a=S.archive[S.archive.length-1];
+  const l=a.log && a.log[logKey(ex,w)];
+  if(!l) return null;
+  const has=(l.kg&&l.kg!=="")||l.rpe||(l.sets&&l.sets.some(v=>v!==""&&v!=null));
+  return has?l:null;
+}
 
 // ---------- render ----------
 function render(){
@@ -207,6 +217,7 @@ function render(){
 
   const m=document.getElementById("main"); m.innerHTML="";
   if(S.showMax) m.appendChild(maxPanel());
+  if(S.showHist) m.appendChild(historyPanel());
   const title=document.createElement("div"); title.className="title";
   title.textContent = S.week===6 ? "Week 6 — reset. Singles at RPE 8 only, nothing else heavy."
     : `Week ${S.week} · ${S.day} · working sets should feel about RPE ${MAIN_RPE[S.week-1]}`;
@@ -232,11 +243,19 @@ function card(ex){
   else if(ex.rpe) rpeTxt=`expect <b>RPE ${ex.rpe[w-1]}</b>`;
   else rpeTxt=typeof ex.cap==="number"?`cap <b>RPE ${ex.cap}</b>`:`<b>${ex.cap}</b>`;
 
+  const pv=prevLog(ex,w);
+  let prevTxt="";
+  if(pv){
+    const reps=(pv.sets||[]).filter(v=>v!==""&&v!=null).join(",");
+    prevTxt=`<div class="prev">Last block: ${pv.kg?pv.kg+"kg ":""}${reps||"–"}${pv.rpe?" @ RPE "+pv.rpe:""}</div>`;
+  }
+
   el.innerHTML=`
     <div class="head"><div class="name">${ex.name}</div><div class="rx">${rx}</div></div>
     ${t!==null?`<div class="big"><div class="kg">${t}</div><div class="unit">kg</div><div class="rpe">${rpeTxt}</div></div>`
              :`<div class="big"><div class="rpe" style="margin-left:0">${rpeTxt}</div></div>`}
     ${ex.key==="single"||ex.key==="test"?`<div class="guide">Guide weight — the RPE cap decides</div>`:""}
+    ${prevTxt}
     <div class="log">
       <label class="field"><span>kg</span><input type="number" inputmode="decimal" step="2.5" placeholder="${t??""}" value="${l.kg}"></label>
       <label class="field"><span>RPE</span><select>${RPE_OPTS.map(o=>`<option ${String(o)===String(l.rpe)?"selected":""}>${o}</option>`).join("")}</select></label>
@@ -322,10 +341,12 @@ function maxPanel(){
     <div class="row" style="margin-top:12px;gap:8px">
       <button class="ghost" id="exp">Export backup</button>
       <button class="ghost" id="imp">Import backup</button>
+      <button class="ghost" id="hist">Past blocks</button>
       <input type="file" id="impfile" accept="application/json" style="display:none">
     </div>`;
+  p.querySelector("#hist").onclick=()=>{S.showHist=!S.showHist; render();};
   p.querySelector("#exp").onclick=()=>{
-    const blob=new Blob([JSON.stringify({tm:S.tm,week:S.week,day:S.day,log:S.log},null,1)],{type:"application/json"});
+    const blob=new Blob([JSON.stringify({tm:S.tm,week:S.week,day:S.day,log:S.log,archive:S.archive,block:S.block},null,1)],{type:"application/json"});
     const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="block-backup.json"; a.click();
   };
   p.querySelector("#imp").onclick=()=>p.querySelector("#impfile").click();
@@ -346,17 +367,38 @@ function resetPanel(){
       ${rows.map(([k,id,add])=>{ const s=get(id); return `<div>${LIFTNAME[k]}</div><div>${s!==null?`${s} + ${add}`:"single not logged"}</div><div class="new">${s!==null?s+add:"–"}</div>`; }).join("")}
     </div>
     <div class="row" style="margin-top:12px;gap:8px">
-      <button class="primary" id="apply">Apply new maxes</button>
-      <button class="ghost" id="clear">Clear block log</button>
+      <button class="primary" id="finish">Finish block</button>
+      <button class="ghost" id="hist2">Past blocks</button>
     </div>
-    <p class="hint" style="margin:10px 0 0">Applying moves the maxes across and takes you back to week 1. Clearing wipes the logged sets so the next block starts clean; maxes are kept.</p>`;
-  p.querySelector("#apply").onclick=()=>{
-    let any=false;
-    for(const [k,id,add] of rows){ const s=get(id); if(s!==null){ S.tm[k]=s+add; any=true; } }
-    if(!any){ flash("Log the RPE 8 singles first"); return; }
-    S.week=1; S.day="Mon"; save(); render(); flash("Maxes updated");
+    <p class="hint" style="margin:10px 0 0">Finishing files this block under Past blocks, moves the new maxes across, and starts week 1 clean. Every set you logged is kept — last block's numbers show under each lift as you go.</p>`;
+  p.querySelector("#hist2").onclick=()=>{S.showHist=!S.showHist; render();};
+  p.querySelector("#finish").onclick=()=>{
+    let any=false; const nt={...S.tm};
+    for(const [k,id,add] of rows){ const s=get(id); if(s!==null){ nt[k]=s+add; any=true; } }
+    if(!any){ flash("Log the week 6 singles first"); return; }
+    if(!confirm("File this block and start the next one off the new maxes?")) return;
+    S.archive.push({name:"Block "+(S.block||1), date:new Date().toISOString().slice(0,10), tm:{...S.tm}, log:S.log});
+    S.block=(S.block||1)+1;
+    S.tm=nt; S.log={}; S.week=1; S.day="Mon"; save(); render(); flash("Block filed");
   };
-  p.querySelector("#clear").onclick=()=>{ if(confirm("Clear every logged set for this block?")){ S.log={}; S.week=1; S.day="Mon"; save(); render(); } };
+  return p;
+}
+
+function historyPanel(){
+  const p=document.createElement("section"); p.className="panel";
+  if(!S.archive.length){
+    p.innerHTML=`<h2>Past blocks</h2><p class="hint" style="margin:0">Nothing filed yet. Finishing a block in week 6 files it here.</p>`;
+    return p;
+  }
+  const body=S.archive.map(a=>{
+    const g=id=>{ const l=a.log["w6_"+id]; return (l&&l.kg)?`${l.kg}kg${l.rpe?" @ "+l.rpe:""}`:"–"; };
+    return `<div style="margin-bottom:14px">
+      <div style="font-weight:700">${a.name}</div>
+      <div class="hint" style="margin:2px 0">Finished ${a.date} · run off ${a.tm.squat} / ${a.tm.bench} / ${a.tm.dead}</div>
+      <div class="hint" style="margin:0">Week 6 singles — squat ${g("r1")}, bench ${g("r2")}, deadlift ${g("r4")}</div>
+    </div>`;
+  }).join("");
+  p.innerHTML=`<h2>Past blocks</h2>${body}<p class="hint" style="margin:0">Full set-by-set history is in Export backup.</p>`;
   return p;
 }
 
